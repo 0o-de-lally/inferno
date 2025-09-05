@@ -1,0 +1,78 @@
+[package]
+name = "inferno-vllm-backend"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "VLLM backend implementation for Inferno with CUDA acceleration"
+
+[dependencies]
+# Workspace dependencies
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+
+# Local dependencies
+inferno-shared = { path = "../shared" }
+
+# HTTP server
+
+# Lightweight CPU inference with real model support
+# For HTTP downloads of models and tokenization
+reqwest = { version = "0.12", optional = true }
+# For actual Llama 3.2 1B inference (git dependency)
+lmrs = { git = "https://github.com/samuel-vitorino/lm.rs", optional = true }
+
+# FFI and build dependencies
+
+# Configuration and environment
+config = "0.14"
+toml = "0.8"
+num_cpus = "1.16"
+
+# Async utilities
+
+# Memory management
+parking_lot = "0.12"
+once_cell = "1.19"
+
+# Performance monitoring
+
+# JSON and validation
+validator = { version = "0.18", features = ["derive"] }
+
+# Tensor operations (for host-side work)
+
+[build-dependencies]
+cmake = "0.1"
+cc = { version = "1.0", features = ["parallel"] }
+bindgen = "0.69"
+pkg-config = "0.3"
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+criterion = { workspace = true }
+proptest = { workspace = true }
+serial_test = { workspace = true }
+reqwest = { workspace = true }
+tempfile = "3.8"
+rstest = "0.18"
+
+[features]
+default = ["cpu-only"]
+cpu-only = ["reqwest", "lmrs"]
+cuda = []
+
+# Benchmarks will be added in later phases
+# [[bench]]
+# name = "latency" 
+# harness = false
+
+# [[bench]]
+# name = "throughput"
+# harness = false
