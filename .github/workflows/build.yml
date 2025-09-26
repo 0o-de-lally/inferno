@@ -1,4 +1,5 @@
 name: Build
+
 on:
   schedule:
     - cron: "45 0 * * *" # Run at 00:45 every day
@@ -6,25 +7,104 @@ on:
     branches: ["**"]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  build:
+  detect-gpu:
+    name: GPU Detection
     runs-on: ubuntu-latest
+    outputs:
+      cuda_available: ${{ steps.gpu.outputs.available }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          profile: minimal
-      - name: Setup CUDA
-        uses: Jimver/cuda-toolkit@v0.2.27
-        with:
-          cuda: '13.0.0'
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-      - name: Build for production
-        env:
-          LD_LIBRARY_PATH: "${{ env.CUDA_PATH }}/lib64:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
-        run: cargo build --release
+    - name: Check for NVIDIA GPU
+      id: gpu
+      run: |
+        if command -v nvidia-smi &> /dev/null && nvidia-smi &> /dev/null; then
+          echo "available=true" >> $GITHUB_OUTPUT
+          echo "Physical GPU detected"
+        else
+          echo "available=false" >> $GITHUB_OUTPUT
+          echo "No physical GPU detected"
+        fi
+
+  cuda-build:
+    name: CUDA Build (Primary Target)
+    runs-on: ubuntu-latest
+    needs: detect-gpu
+    timeout-minutes: 30
+
+    steps:
+    - uses: actions/checkout@v4
+      # NOTE: We intentionally use default checkout behavior:
+      # - PR triggers: Check out the merge commit (tests PR + target branch compatibility)
+      # - Push triggers: Check out the actual pushed commit
+      # This ensures PRs are tested against the target branch state
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache Rust dependencies
+      uses: Swatinem/rust-cache@v2
+      with:
+        cache-on-failure: true
+
+    - name: Update dependencies for CUDA 13.0 support
+      run: |
+        echo "Updating dependencies to ensure cudarc 0.17.3+ for CUDA 13.0 support..."
+        cargo update
+
+    - name: Setup CUDA
+      uses: Jimver/cuda-toolkit@v0.2.27
+      with:
+        cuda: '13.0.0'
+        method: 'network'
+        sub-packages: '["nvcc", "cudart", "cudart-dev", "thrust", "nvrtc", "cublas", "cublas-dev", "curand", "curand-dev"]'
+
+    - name: Install additional CUDA libraries
+      run: |
+        # Install available CUDA math libraries
+        sudo apt-get update
+        # Try to install cuBLAS and cuRAND libraries without version suffix
+        sudo apt-get install -y libcublas12 libcurand10 || true
+        # Try alternative package names
+        sudo apt-get install -y libcublas-12-0 libcurand-10-0 || true
+        # Create symlinks for the libraries that candle expects
+        sudo ln -sf /usr/local/cuda-13.0/lib64/libcublas.so.12 /usr/local/cuda-13.0/lib64/libcublas.so || true
+        sudo ln -sf /usr/local/cuda-13.0/lib64/libcublasLt.so.12 /usr/local/cuda-13.0/lib64/libcublasLt.so || true
+        sudo ln -sf /usr/local/cuda-13.0/lib64/libcurand.so.10 /usr/local/cuda-13.0/lib64/libcurand.so || true
+        sudo ln -sf /usr/local/cuda-13.0/lib64/libnvrtc.so.12.0 /usr/local/cuda-13.0/lib64/libnvrtc.so || true
+        # List what CUDA libraries are available
+        ls -la /usr/local/cuda-13.0/lib64/ | grep -E "(cublas|curand|nvrtc)" || echo "Libraries not found in standard location"
+
+    - name: Verify CUDA Installation
+      run: |
+        echo "CUDA Installation Verification:"
+        nvcc --version
+        echo "CUDA_HOME: $CUDA_HOME"
+        echo "CUDA_PATH: $CUDA_PATH"
+        ls -la $CUDA_PATH/lib64/ | head -10
+
+    - name: Build CUDA Binary
+      env:
+        # CUDA environment variables (set by cuda-toolkit action)
+        LD_LIBRARY_PATH: "${{ env.CUDA_PATH }}/lib64:/usr/lib/x86_64-linux-gnu:${{ env.LD_LIBRARY_PATH }}"
+        CUDA_COMPUTE_CAP: "80"
+      run: |
+        echo "Building CUDA binary for production release"
+
+        # Show environment for debugging
+        echo "CUDA Environment:"
+        echo "CUDA_HOME=$CUDA_HOME"
+        echo "CUDA_PATH=$CUDA_PATH"
+        echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
+        echo "PATH includes CUDA: $(echo $PATH | grep cuda || echo 'No CUDA in PATH')"
+        nvcc --version 2>/dev/null || echo "nvcc not available"
+
+        echo "Building CUDA backend with full development environment"
+        # Build with verbose output to catch any compilation issues
+        cargo build --release --features candle-cuda --verbose
+
+
